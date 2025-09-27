@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>99 Days: Forest Survival</title>
+  <style>
+    body { margin: 0; overflow: hidden; background: #111; }
+    #ui {
+      position: absolute; top: 10px; left: 10px; color: #fff; font-size: 16px;
+      font-family: Arial; z-index: 10; background: rgba(0,0,0,0.5); padding: 12px; border-radius: 8px;
+      width: 320px;
+    }
+    #chooseClass { margin: 0; margin-bottom: 10px; }
+    #inventory { margin: 10px 0;}
+    #quest { margin: 10px 0; }
+    .npc { color: #ffd700; }
+    .hostile { color: #ff4b4b; }
+    .neutral { color: #cfc; }
+  </style>
+</head>
+<body>
+<div id="ui">
+  <div id="chooseClass">
+    <b>Choose your class:</b><br>
+    <button onclick="chooseClass('Camper')">Camper</button>
+    <button onclick="chooseClass('Assassin')">Assassin</button>
+  </div>
+  <div id="gameInfo" style="display:none;">
+    <div><b>Day:</b> <span id="dayNum">1</span> / 99</div>
+    <div id="inventory"></div>
+    <div id="campfireStatus"></div>
+    <div id="quest"></div>
+    <div id="childrenInfo"></div>
+    <div id="hint"></div>
+  </div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/three@0.153.0/build/three.min.js"></script>
+<script>
+/* --- Game Data --- */
+let classes = {
+  Camper: {desc: "Starts with extra wood. Campfire lasts longer.", wood: 8, coal: 3, perks: {campfire: 1.2}},
+  Assassin: {desc: "Moves faster. Can stealth kill cultists.", wood: 5, coal: 2, perks: {speed: 1.3, stealth:true}}
+};
+let player = {
+  class: "",
+  perks: {},
+  wood: 0,
+  coal: 0,
+  rescued: [false,false,false,false],
+  day: 1,
+  health: 100,
+  speed: 8,
+  pos: new THREE.Vector3(0,1,0),
+  inventory: [],
+  clues: [],
+  alive: true,
+};
+let campfire = {
+  fuel: 100, // percent
+  safeRadius: 10,
+  burning: true
+};
+let children = [
+  {name:"Anna", rescued:false, pos:new THREE.Vector3(3,1,-5)},
+  {name:"Ben", rescued:false, pos:new THREE.Vector3(-4,1,4)},
+  {name:"Maya", rescued:false, pos:new THREE.Vector3(5,1,6)},
+  {name:"Lee", rescued:false, pos:new THREE.Vector3(-5,1,-7)}
+];
+let entities = []; // Hostile, passive, neutral
+
+let quest = {
+  main: "Rescue the four lost children and keep the campfire alive for 99 days. Find clues at the plane crash.",
+  cluesFound: 0,
+  totalClues: 3
+};
+
+let planeCrashSite = {pos:new THREE.Vector3(24,1,24), clueFound:false};
+
+function chooseClass(cls) {
+  player.class = cls;
+  player.perks = classes[cls].perks;
+  player.wood = classes[cls].wood;
+  player.coal = classes[cls].coal;
+  if(cls==="Camper") campfire.fuel *= player.perks.campfire;
+  if(cls==="Assassin") player.speed *= player.perks.speed;
+  document.getElementById("chooseClass").style.display="none";
+  document.getElementById("gameInfo").style.display="block";
+  updateUI();
+}
+function updateUI() {
+  document.getElementById("dayNum").innerText = player.day;
+  document.getElementById("inventory").innerHTML = `<b>Wood:</b> ${player.wood} &nbsp; <b>Coal:</b> ${player.coal}`;
+  document.getElementById("campfireStatus").innerHTML = `<b>Campfire:</b> ${campfire.burning ? "Burning" : "Out"} (${campfire.fuel.toFixed(0)}%)`;
+  let rescued = children.filter(c=>c.rescued).length;
+  document.getElementById("childrenInfo").innerHTML =
+    `<b>Children rescued:</b> ${rescued}/${children.length} ${children.map((c,i)=>
+      `<span class="npc">${c.name}:${c.rescued?"✅":"❌"}</span>`).join(" ")}`
+  ;
+  document.getElementById("quest").innerHTML = `<b>Quest:</b> ${quest.main}`;
+  document.getElementById("hint").innerHTML = player.clues.length?"<b>Clues:</b> "+player.clues.join("<br>"):"";
+}
+
+/* --- Three.js Scene --- */
+let scene = new THREE.Scene();
+scene.background = new THREE.Color(0x112233);
+let camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
+let renderer = new THREE.WebGLRenderer();
+renderer.setSize(window.innerWidth, window.innerHeight);
+document.body.appendChild(renderer.domElement);
+
+// Environment
+let ground = new THREE.Mesh(new THREE.BoxGeometry(60, 2, 60), new THREE.MeshLambertMaterial({color: 0x3a4e23}));
+ground.position.y = -1; scene.add(ground);
+
+// Trees
+function makeTree(x,z) {
+  let trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.4,0.5,3,8), new THREE.MeshLambertMaterial({color:0x8d5c2a}));
+  trunk.position.set(x,1.5,z);
+  let leaves = new THREE.Mesh(new THREE.SphereGeometry(1.2,8,8), new THREE.MeshLambertMaterial({color:0x237c23}));
+  leaves.position.set(x,4,z);
+  scene.add(trunk); scene.add(leaves);
+}
+for(let i=0;i<40;i++) {
+  let x = Math.random()*55-27, z = Math.random()*55-27;
+  makeTree(x,z);
+}
+
+// Campfire
+let campfireMesh = new THREE.Mesh(new THREE.CylinderGeometry(1,1,0.6,16), new THREE.MeshLambertMaterial({color:0xffc85c}));
+campfireMesh.position.set(0,0.3,0); scene.add(campfireMesh);
+
+// Children NPCs
+function makeChildNPC(child) {
+  let body = new THREE.Mesh(new THREE.CapsuleGeometry(0.6,1.2,6,6), new THREE.MeshPhongMaterial({color:0xffe4b5}));
+  body.position.copy(child.pos); scene.add(body);
+  child.mesh = body;
+  let tent = new THREE.Mesh(new THREE.ConeGeometry(1.2,1.7,7), new THREE.MeshLambertMaterial({color:0x4e5f7b}));
+  tent.position.copy(child.pos).add(new THREE.Vector3(0,0.85,0));
+  scene.add(tent);
+}
+children.forEach(makeChildNPC);
+
+// Passive/Neutral creatures
+function makeCreature(type,x,z) {
+  let mesh;
+  if(type==="owl") {
+    mesh = new THREE.Mesh(new THREE.SphereGeometry(0.8,8,8), new THREE.MeshLambertMaterial({color:0xb9b9ff}));
+    mesh.position.set(x,2.5,z);
+  } else if(type==="rabbit") {
+    mesh = new THREE.Mesh(new THREE.SphereGeometry(0.5,8,8), new THREE.MeshLambertMaterial({color:0xfff8e7}));
+    mesh.position.set(x,0.7,z);
+  }
+  scene.add(mesh);
+  entities.push({type, mesh, passive:true});
+}
+makeCreature("owl",-10,10);
+makeCreature("rabbit",11,-8);
+
+// Hostile Entities
+function makeHostile(type,x,z) {
+  if(type==="deer") { // Wendigo-like
+    let body = new THREE.Mesh(new THREE.CylinderGeometry(0.6,0.4,4.5,8), new THREE.MeshPhongMaterial({color:0xcfcfcf}));
+    body.position.set(x,2.2,z);
+    let head = new THREE.Mesh(new THREE.SphereGeometry(0.8,8,8), new THREE.MeshPhongMaterial({color:0xf4eee8}));
+    head.position.set(x,4.4,z);
+    scene.add(body); scene.add(head);
+    entities.push({type, body, head, mesh:body, hostile:true, ai:{hunt:true}, health:150});
+  } else if(type==="cultist") {
+    let cult = new THREE.Mesh(new THREE.CapsuleGeometry(0.7,2,8,8), new THREE.MeshPhongMaterial({color:0x770000}));
+    cult.position.set(x,1.5,z);
+    scene.add(cult);
+    entities.push({type, mesh:cult, hostile:true, ai:{patrol:true}, health:60});
+  }
+}
+makeHostile("deer", 18, -18);
+for(let i=0;i<3;i++) makeHostile("cultist", Math.random()*44-22, Math.random()*44-22);
+
+// Plane crash site & clue
+let plane = new THREE.Mesh(new THREE.BoxGeometry(4,0.8,12), new THREE.MeshLambertMaterial({color:0xdcdcdc}));
+plane.position.copy(planeCrashSite.pos); scene.add(plane);
+
+/* --- Player --- */
+let playerGeo = new THREE.CapsuleGeometry(0.7,2.3,10,10);
+let playerMat = new THREE.MeshPhongMaterial({color:0x3fb2ff});
+let playerMesh = new THREE.Mesh(playerGeo, playerMat); playerMesh.position.copy(player.pos);
+scene.add(playerMesh);
+
+// Camera follows player
+let yaw=0, pitch=0, pointerLocked=false;
+document.body.onclick = ()=>{if(!pointerLocked)renderer.domElement.requestPointerLock();}
+document.addEventListener("pointerlockchange", ()=>{pointerLocked=document.pointerLockElement===renderer.domElement;});
+window.addEventListener("mousemove", e=>{
+  if(pointerLocked) {
+    yaw -= e.movementX*0.002;
+    pitch -= e.movementY*0.002; pitch = Math.max(-1,Math.min(1,pitch));
+  }
+});
+let keys = {};
+window.addEventListener("keydown", e=>{keys[e.code]=true;});
+window.addEventListener("keyup", e=>{keys[e.code]=false;});
+function movePlayer(dt) {
+  let speed = player.speed;
+  let dir = new THREE.Vector3();
+  if(keys["KeyW"]) dir.z-=1;
+  if(keys["KeyS"]) dir.z+=1;
+  if(keys["KeyA"]) dir.x-=1;
+  if(keys["KeyD"]) dir.x+=1;
+  dir.normalize();
+  let move = new THREE.Vector3();
+  move.x = Math.cos(yaw)*dir.x - Math.sin(yaw)*dir.z;
+  move.z = Math.sin(yaw)*dir.x + Math.cos(yaw)*dir.z;
+  player.pos.x += move.x*speed*dt;
+  player.pos.z += move.z*speed*dt;
+  // Clamp to map
+  player.pos.x = Math.max(-29,Math.min(29,player.pos.x));
+  player.pos.z = Math.max(-29,Math.min(29,player.pos.z));
+  // Basic walk animation
+  playerMesh.position.copy(player.pos);
+  playerMesh.rotation.y = yaw;
+}
+// Camera update
+function updateCamera() {
+  let lookDir = new THREE.Vector3(Math.sin(yaw)*Math.cos(pitch), Math.sin(pitch), Math.cos(yaw)*Math.cos(pitch));
+  camera.position.copy(player.pos).addScaledVector(lookDir,-10).add(new THREE.Vector3(0,6,0));
+  camera.lookAt(playerMesh.position.clone().add(new THREE.Vector3(0,2,0)));
+}
+
+/* --- Game Mechanics --- */
+// Gather resource (wood/coal)
+function gatherResource(res) {
+  if(res==="wood") player.wood+=1;
+  if(res==="coal") player.coal+=1;
+  updateUI();
+}
+// At tree: gather wood, at rabbit: can catch, at owl: clue
+window.addEventListener("keydown", e=>{
+  if(e.code==="KeyE") { // Interact
+    // At campfire: refuel
+    if(player.pos.distanceTo(campfireMesh.position)<3) {
+      if(player.wood>0) {campfire.fuel+=15; player.wood-=1;}
+      if(player.coal>0) {campfire.fuel+=35; player.coal-=1;}
+      campfire.burning = campfire.fuel>0;
+      updateUI();
+    }
+    // At child: rescue
+    children.forEach((c,i)=>{
+      if(!c.rescued && player.pos.distanceTo(c.pos)<2.2) {
+        c.rescued=true; player.rescued[i]=true;
+        c.mesh.material.color.set(0x5fff5f);
+        updateUI();
+      }
+    });
+    // At plane: clue
+    if(player.pos.distanceTo(planeCrashSite.pos)<4 && !planeCrashSite.clueFound) {
+      planeCrashSite.clueFound = true;
+      player.clues.push("Found passenger list and flight recorder at the crash site.");
+      updateUI();
+    }
+    // At owl: clue
+    entities.forEach(ent=>{
+      if(ent.type==="owl" && player.pos.distanceTo(ent.mesh.position)<2.5) {
+        player.clues.push("Owl saw cultists near the crash site on day 17.");
+        updateUI();
+      }
+    });
+  }
+  // Gather wood
+  if(e.code==="KeyF") {
+    // Near tree
+    for(let i=0;i<40;i++) {
+      let x = ground.position.x + Math.random()*55-27, z = ground.position.z + Math.random()*55-27;
+      if(player.pos.distanceTo(new THREE.Vector3(x,0,z))<2.5) {
+        gatherResource("wood"); break;
+      }
+    }
+  }
+  // Gather coal
+  if(e.code==="KeyC") {
+    if(Math.random()<0.3) gatherResource("coal");
+  }
+});
+
+/* --- Hostile Entity AI --- */
+function updateEntities(dt) {
+  entities.forEach(ent=>{
+    if(ent.hostile) {
+      if(ent.type==="deer") {
+        // Hunt at night, stalk player
+        let dist = ent.body.position.distanceTo(player.pos);
+        if(dist<12) {
+          let dir = player.pos.clone().sub(ent.body.position).normalize();
+          ent.body.position.addScaledVector(dir,dt*2.2);
+          ent.head.position.copy(ent.body.position).add(new THREE.Vector3(0,2.2,0));
+          // Attack
+          if(dist<2) {
+            player.health -= 0.5; playerMesh.material.color.set(0xff4040);
+            if(player.health<0) { player.alive=false; }
+          }
+        }
+      }
+      if(ent.type==="cultist") {
+        // Patrol, chase player if close
+        let dist = ent.mesh.position.distanceTo(player.pos);
+        if(dist<10) {
+          let dir = player.pos.clone().sub(ent.mesh.position).normalize();
+          ent.mesh.position.addScaledVector(dir,dt*3.5);
+        } else {
+          ent.mesh.position.x += Math.sin(Date.now()/900 + ent.mesh.position.z)*dt*2.5;
+          ent.mesh.position.z += Math.cos(Date.now()/900 + ent.mesh.position.x)*dt*2.5;
+        }
+        if(dist<2) {
+          player.health -= 0.7; playerMesh.material.color.set(0xff4040);
+          if(player.health<0) { player.alive=false; }
+        }
+      }
+    }
+  });
+}
+
+/* --- Day/Night Cycle --- */
+let dayTime=0, night=false;
+function updateDay(dt) {
+  dayTime += dt;
+  if(dayTime>16) { // Each "day" = 16s (for demo!)
+    dayTime=0;
+    player.day++; campfire.fuel -= 22; // Burn per day
+    if(campfire.fuel<0) campfire.fuel=0;
+    campfire.burning = campfire.fuel>0;
+    updateUI();
+    if(player.day>99) {alert("You survived 99 days!");}
+  }
+  // Night: entities more aggressive
+  night = (dayTime>8);
+  scene.background.set(night?0x040820:0x112233);
+}
+
+/* --- Main Loop --- */
+let lastTime = performance.now();
+function animate() {
+  if(!player.class || !player.alive) return;
+  let now = performance.now(), dt = (now-lastTime)/1000; lastTime = now;
+  movePlayer(dt); updateCamera(); updateEntities(dt); updateDay(dt);
+  renderer.render(scene, camera);
+  requestAnimationFrame(animate);
+}
+animate();
+
+</script>
+</body>
+</html>
